@@ -1,0 +1,33 @@
+# Ignore all files in the data and outputs folders
+data/
+outputs/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code and Spyder settings
+.vscode/
+.spyderproject
+.spyproject
+
+# Data/cache/output
+*.feather
+*.parquet
+*.csv
+*.log
+.DS_Store
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+*.env
+
+# OS-specific
+Thumbs.db
