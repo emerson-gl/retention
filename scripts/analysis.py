@@ -5,6 +5,17 @@ from datetime import timedelta
 from joblib import Parallel, delayed
 import gc
 
+
+# Decide if you want first or last orders
+first_or_last = 'first'
+# first_or_last = 'last'
+# first_or_last = None
+
+# Decide how many orders
+number_of_orders = 2
+
+
+
 # -------------------------------------------------------------------------
 # 1) LOAD AND CLEAN
 # -------------------------------------------------------------------------
@@ -88,7 +99,13 @@ order_df.to_feather("outputs/order_df_retention.feather")
 # 3) CUSTOMER-LEVEL AGGREGATES
 # -------------------------------------------------------------------------
 
-grouped_customers = order_df.groupby('CustomerId')
+# Get each customer's relevant orders
+if first_or_last == 'first':
+    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).head(number_of_orders)
+elif first_or_last == 'last':
+    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(number_of_orders)
+else:
+    grouped_customers = order_df.groupby('CustomerId')
 
 
 def get_mode(x):
@@ -113,7 +130,7 @@ def get_mode(x):
 #     StdDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.std())
 # ).reset_index()
 
-agg_base = grouped_customers.agg(
+agg_base = grouped_customers.groupby('CustomerId').agg(
     TotalOrders=('OrderNumber', 'count'),
     AvgOrderItemTotal=('OrderItemPriceTotal', 'mean'),
     AvgPriceTotal=('PriceTotal', 'mean'),
@@ -125,6 +142,7 @@ agg_base = grouped_customers.agg(
     FirstOrderDate=('OrderDate', 'min'),
     LastOrderDate=('OrderDate', 'max'),
 ).reset_index()
+
 
 def custom_stats(group):
     order_dates = group['OrderDate'].sort_values()
@@ -138,16 +156,22 @@ def custom_stats(group):
         'ModeMonth': group['Month'].mode().iloc[0] if not group['Month'].mode().empty else np.nan
     }
 
-# Filter to customers with 2+ orders
-grouped = order_df.groupby('CustomerId')
-filtered_groups = {k: g for k, g in grouped if len(g) > 1}
+# Filter to customers with specific ordres or more than 1
+if first_or_last == 'first':
+    grouped = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).head(number_of_orders)
+    filtered_groups = dict(tuple(grouped.groupby('CustomerId')))
+elif first_or_last == 'last':
+    grouped = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(number_of_orders)
+    filtered_groups = dict(tuple(grouped.groupby('CustomerId')))
+else:
+    grouped = order_df.groupby('CustomerId')
+    filtered_groups = {k: g for k, g in grouped if len(g) > 1}
 
 agg_custom = pd.DataFrame(
     Parallel(n_jobs=8)(
         delayed(custom_stats)(group) for group in filtered_groups.values()
     )
 )
-
 
 agg_df = pd.merge(agg_base, agg_custom, on='CustomerId', how='left')
 
@@ -282,6 +306,7 @@ churn_df['OneAndDone'] = ((churn_df['TotalOrders'] == 1) & (churn_df['LikelyChur
 # This isn't necessarily accurate by the defintion of churn
 # I wanted to keep OneAndDone separate from ThreeOrFewerAndChurned, i.e.
 churn_df['ThreeOrFewerAndChurned'] = (churn_df['TotalOrders'] <= 3) & (churn_df['LikelyChurned'])
+churn_df['TwoAndChurned'] = (churn_df['TotalOrders'] == 2) & (churn_df['LikelyChurned'])
 
 # Pattern flags
 # Old definitions, percentage based and not rule-based
@@ -316,6 +341,10 @@ customer_summary = (
 # customer_summary.to_csv("outputs/customer_summary.csv", index=False)
 # customer_summary_subset = customer_summary.head(2000)
 # customer_summary_subset.to_csv("outputs/customer_summary_subset.csv", index=False)
-customer_summary.to_feather("outputs/customer_summary.feather")
+filename = f"outputs/customer_summary_{first_or_last}_{number_of_orders}_order.feather"
+
+# Save
+customer_summary.to_feather(filename)
+
 
 gc.collect()

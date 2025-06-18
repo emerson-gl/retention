@@ -7,10 +7,11 @@ import matplotlib.pyplot as plt
 import shap
 import gc
 
-predict_variable = 'LikelyChurned'
+# predict_variable = 'LikelyChurned'
+predict_variable = 'TwoAndChurned'
 # predict_variable = 'OneAndDone'
 
-min_orders = 1
+min_orders = 2
 
 # Load your data
 
@@ -21,7 +22,7 @@ if predict_variable == 'LikelyChurned':
 
     
     # LikelyChurned
-    # attribitutes = ['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
+    # attributes = ['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
     #        'AvgDiscount', 'AvgQuantity', 'ModeHour', 'ModeDayOfWeek',
     #        'PctMorning', 'PctAfternoon', 'PctEvening', 'PctEarlyMorning',
     #        'PctWorkHours', 'PctWorkday', 'PctHoliday', 'PctSummer',
@@ -34,7 +35,7 @@ if predict_variable == 'LikelyChurned':
     #        # 'AnnualPattern',
     # ]
     
-    attribitutes = ['TotalOrders', 'AvgOrderItemTotal',
+    attributes = ['TotalOrders', 'AvgOrderItemTotal',
            'AvgDiscount', 
            # 'AvgQuantity',
            # 'PctHoliday', 
@@ -47,23 +48,55 @@ if predict_variable == 'LikelyChurned':
            # 'ElectionPattern',
            # 'PresidentialPattern',
            # 'AnnualPattern',
-           'Rolling90DaysSinceLastOrder'
+           # 'Rolling90DaysSinceLastOrder',
+           # 'Rolling30DaysSinceLastOrder',
+           'FirstOrderSampleOnly',
     ]
     
-    # attribitutes = [
+    # attributes = [
     #     'PctHoliday', 'AvgOrderItemTotal', 'AvgDiscount', 'PctWorkHours', 
     #     'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
     # ]
     
+elif predict_variable == 'TwoAndChurned':
+    
+    customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary_first_2_order.feather")
+    # total_df = customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary.feather")
+    # total_df = total_df[['CustomerId', 'TotalOrders']]
+    # customer_summary = customer_summary.merge(total_df, on = 'CustomerId', how = 'left')
+            
+    # LikelyChurned
+    attributes = ['AvgOrderItemTotal',
+           'AvgDiscount', 
+           # 'AvgQuantity',
+           'PctHoliday', 
+           # 'PctSummer',
+           # 'PctElectionSeason', 
+           # 'PctPresidentialElection',
+           'PctNormalShipping',
+           # 'HolidayPattern',
+           # 'SummerPattern',
+           # 'ElectionPattern',
+           # 'PresidentialPattern',
+           # 'AnnualPattern',
+           # 'Rolling90DaysSinceLastOrder',s
+           # 'Rolling30DaysSinceLastOrder',
+           'FirstOrderSampleOnly',
+    ]
+    
+    
+    
 elif predict_variable == 'OneAndDone':
     
-    customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary_one_order.feather")
-    
+    customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary_last_1_order.feather")
+        
     # LikelyChurned
-    attribitutes = [
+    attributes = [
         'PctHoliday', 'OrderItemPriceTotal', 'TotalDiscount', 'PctWorkHours', 
         'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
         ]
+    
+    
     
 
     
@@ -89,13 +122,19 @@ for col in customer_summary.select_dtypes(include='bool').columns:
 
 
 
-
-
-
 # Make sure all cells are valid
-subset = customer_summary[['CustomerId', predict_variable] + attribitutes]
-# subset = subset[subset['TotalOrders'] >= min_orders]
+if predict_variable == 'LikelyChurned':
+    if 'TotalOrders' not in attributes:
+        subset = customer_summary[['CustomerId', 'TotalOrders', predict_variable] + attributes]
+    else:
+        subset = customer_summary[['CustomerId', predict_variable] + attributes]
+    subset = subset[subset['TotalOrders'] >= min_orders]
+else:
+    subset = customer_summary[['CustomerId', predict_variable] + attributes]
 subset = subset.dropna()
+
+
+
 
 X = subset.drop(columns=['CustomerId', predict_variable])
 
@@ -179,7 +218,7 @@ for name in X_train.columns:
 
 
 # # Force a constrained chart
-# feature_name = 'AvgOrderItemTotal'
+# feature_name = 'AvgDiscount'
 # lower, upper = np.percentile(X_test[feature_name], [1, 99])
 # inlier_mask = ((X_test[feature_name] >= lower) & (X_test[feature_name] <= upper)).to_numpy()
 

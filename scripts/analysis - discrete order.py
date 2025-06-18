@@ -3,6 +3,13 @@ import numpy as np
 import os
 from datetime import timedelta
 
+# Decide if you want first or last orders
+# first_or_last = 'first'
+first_or_last = 'last'
+
+# Decide how many orders
+number_of_orders = 1
+
 
 os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 
@@ -82,8 +89,11 @@ order_df['PresidentialElection'] = (order_df['Month'].isin([8, 9, 10])) & (order
 order_df['RushFeeAndShipPrice'] = order_df['RushFee'] + order_df['ShipPrice']
 
 
-# Get each customer's last order
-grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(1)
+# Get each customer's relevant orders
+if first_or_last == 'first':
+    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).head(number_of_orders)
+elif first_or_last == 'last':
+    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(number_of_orders)
 
 # Export
 # last_orders.to_feather("outputs/customer_summary_one_order.feather")
@@ -167,7 +177,8 @@ customer_summary_one_order = (
     .merge(ship_pct, on='CustomerId', how='left')
 )
 
+filename = f"outputs/customer_summary_{first_or_last}_{number_of_orders}_order.feather"
 
 # Save
-customer_summary_one_order.to_feather('outputs/customer_summary_one_order.feather')
+customer_summary_one_order.to_feather(filename)
 
