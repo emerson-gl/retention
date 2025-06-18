@@ -4,13 +4,65 @@ from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val
 from sklearn.metrics import classification_report, roc_auc_score
 import matplotlib.pyplot as plt
 import shap
+import gc
 
 predict_variable = 'LikelyChurned'
 # predict_variable = 'OneAndDone'
 
+min_orders = 1
 
 # Load your data
-customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary.feather")
+
+if predict_variable == 'LikelyChurned':
+    customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary.feather")
+    
+    # LikelyChurned
+    # attribitutes = ['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
+    #        'AvgDiscount', 'AvgQuantity', 'ModeHour', 'ModeDayOfWeek',
+    #        'PctMorning', 'PctAfternoon', 'PctEvening', 'PctEarlyMorning',
+    #        'PctWorkHours', 'PctWorkday', 'PctHoliday', 'PctSummer',
+    #        'PctElectionSeason', 'PctPresidentialElection', 'PctFirstWeek',
+    #        'PctLastWeek', 'PctRushed', 'PctExpedited', 'PctNormalShipping', 'PctNo-Ship',
+    #        # 'HolidayPattern',
+    #        # 'SummerPattern',
+    #        # 'ElectionPattern',
+    #        # 'PresidentialPattern',
+    #        # 'AnnualPattern',
+    # ]
+    
+    attribitutes = ['TotalOrders', 'AvgOrderItemTotal',
+           'AvgDiscount', 
+           # 'AvgQuantity',
+           # 'PctHoliday', 
+           # 'PctSummer',
+           # 'PctElectionSeason', 
+           # 'PctPresidentialElection',
+           'PctNormalShipping'
+           # 'HolidayPattern',
+           # 'SummerPattern',
+           # 'ElectionPattern',
+           # 'PresidentialPattern',
+           # 'AnnualPattern',
+    ]
+    
+    attribitutes = [
+        'PctHoliday', 'AvgOrderItemTotal', 'AvgDiscount', 'PctWorkHours', 
+        'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
+    ]
+    
+elif predict_variable == 'OneAndDone':
+    
+    customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary_one_order.feather")
+    
+    # LikelyChurned
+    attribitutes = [
+        'PctHoliday', 'OrderItemPriceTotal', 'TotalDiscount', 'PctWorkHours', 
+        'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
+        ]
+    
+
+    
+
 
 # Convert object-type columns to category or bool where appropriate
 for col in customer_summary.columns:
@@ -30,36 +82,21 @@ for col in customer_summary.select_dtypes(include='category').columns:
 for col in customer_summary.select_dtypes(include='bool').columns:
     customer_summary[col] = customer_summary[col].astype(int)
 
-# LikelyChurned
-# Drop obvious identifier / label leakage
-X = customer_summary[['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
-       'AvgDiscount', 'AvgQuantity', 'ModeHour', 'ModeDayOfWeek',
-       'QuarterlyPattern',
-       'MonthlyPattern', 'SeasonalPattern', 'ElectionPattern',
-       'PctMorning', 'PctAfternoon', 'PctEvening', 'PctEarlyMorning',
-       'PctWorkHours', 'PctWorkday', 'PctHoliday', 'PctSummer',
-       'PctElectionSeason', 'PctPresidentialElection', 'PctFirstWeek',
-       'PctLastWeek', 'PctRushed', 'PctExpedited', 'PctNormal', 'PctNo-Ship'
-]]
-
-# OneAndDone
-# X = X[X['TotalOrders'] > 1]
-
-# X = customer_summary[[
-#     'DaysSinceLastOrder', 'PctHoliday','AvgQuantity', 'PctWorkHours', 
-#     'PctSummer', 'PctPresidentialElection', 'PctExpedited', 
-# ]]
 
 
-# X = customer_summary[[
-#     'PctHoliday','AvgQuantity', 'PctWorkHours', 
-#     'PctSummer', 'PctPresidentialElection', 'PctExpedited', 
-# ]]
 
 
+
+# Make sure all cells are valid
+subset = customer_summary[['CustomerId', predict_variable] + attribitutes]
+# subset = subset[subset['TotalOrders'] >= min_orders]
+subset = subset.dropna()
+
+X = subset.drop(columns=['CustomerId', predict_variable])
 
 # Choose a label
-y = customer_summary[predict_variable]
+y = subset[predict_variable]
+
 # y = customer_summary[customer_summary['TotalOrders'] > 1][predict_variable]
 
 # Train/test split
@@ -94,21 +131,44 @@ print("AUC:", roc_auc_score(y_test, model.predict_proba(X_test)[:, 1]))
 # print("Mean AUC:", scores.mean())
 
 
-
+# Need to put some tooling in to display the number of orders, what's being predicted,
+# and the accuracy of the model 
 # Feature importance
 # Plot top 15 features
 plt.figure(figsize=(10, 6))
 plot_importance(model, max_num_features=15)
-plt.title('Top 15 Feature Importances')
+plt.title(f'Top Feature Importances - {predict_variable}')
 plt.show()
 
 # SHAP values
 # Create explainer
 explainer = shap.Explainer(model, X_train)
 shap_values = explainer(X_test)
-shap.summary_plot(shap_values, X_test)
+shap.summary_plot(
+    shap_values,          # array or Explanation
+    X_test,               # the data
+    show=False            # <= keep Matplotlib figure open
+)
+
+# 2) grab the figure / axes SHAP just created
+fig = plt.gcf()           # current figure
+ax  = plt.gca()           # the main axis (beeswarm)
+
+# 3) set the title (or anything else you want)
+fig.suptitle(f"SHAP summary for '{predict_variable}'", fontsize=14, y=1.02)
+
+# 4) tidy & display / save
+plt.tight_layout()
+plt.show()          # or fig.savefig("summary_plot.png", dpi=300)
+
+for name in X_train.columns:
+    shap.dependence_plot(name, shap_values.values, X_test, display_features=X_test)
+
 
 # Force plot for a single prediction
-i = 1000
-shap.plots.waterfall(shap_values[i])
-model.predict([X_test.iloc[i]])  # where i is the index of 
+# for i in list(range(123, 133)):
+#     shap.plots.waterfall(shap_values[i])
+#     model.predict([X_test.iloc[i]])  # where i is the index of 
+    
+gc.collect()
+
