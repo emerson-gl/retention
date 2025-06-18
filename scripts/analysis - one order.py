@@ -36,10 +36,10 @@ shipping_map = {
     'ConciergeService': 'Rushed', 'FedEx2Day': 'Expedited', 'FedExOneRate2Day': 'Expedited',
     'UPS2DayAir': 'Expedited', 'FedExExpressSaver': 'Expedited', 'UPS3DaySelect': 'Expedited',
     'FedExInternationalPriority': 'Expedited', 'FedExInternationalConnectPlus': 'Expedited',
-    'PickupAtConferenceExpedited': 'Expedited', 'MiExpedited': 'Expedited', 'FirstClassMail': 'Normal',
-    'PriorityMail': 'Normal', 'USMail': 'Normal', 'UPSGround': 'Normal', 'FedExGroundHomeDelivery': 'Normal',
-    'FedExGround': 'Normal', 'FedExInternationalGround': 'Normal', 'PriorityMailInternational': 'Normal',
-    'FirstClassMailInternational': 'Normal', 'Standard': 'Normal', 'Other': 'Normal', 'Pickup': 'No-Ship',
+    'PickupAtConferenceExpedited': 'Expedited', 'MiExpedited': 'Expedited', 'FirstClassMail': 'NormalShipping',
+    'PriorityMail': 'NormalShipping', 'USMail': 'NormalShipping', 'UPSGround': 'NormalShipping', 'FedExGroundHomeDelivery': 'NormalShipping',
+    'FedExGround': 'NormalShipping', 'FedExInternationalGround': 'NormalShipping', 'PriorityMailInternational': 'NormalShipping',
+    'FirstClassMailInternational': 'NormalShipping', 'Standard': 'NormalShipping', 'Other': 'NormalShipping', 'Pickup': 'No-Ship',
     'PickupAtConference': 'No-Ship', 'PickupAtConferenceFree': 'No-Ship'
 }
 order_df['ShippingType'] = order_df['VendorShippingServiceID'].map(shipping_map).fillna('Unknown')
