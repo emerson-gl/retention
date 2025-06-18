@@ -16,6 +16,9 @@ min_orders = 1
 
 if predict_variable == 'LikelyChurned':
     customer_summary = pd.read_feather("C:/Users/Graphicsland/Spyder/retention/outputs/customer_summary.feather")
+    customer_summary['Rolling90DaysSinceLastOrder'] = customer_summary['DaysSinceLastOrder'].clip(upper=90)
+    customer_summary['Rolling30DaysSinceLastOrder'] = customer_summary['DaysSinceLastOrder'].clip(upper=30)
+
     
     # LikelyChurned
     # attribitutes = ['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
@@ -38,18 +41,19 @@ if predict_variable == 'LikelyChurned':
            # 'PctSummer',
            # 'PctElectionSeason', 
            # 'PctPresidentialElection',
-           'PctNormalShipping'
+           'PctNormalShipping',
            # 'HolidayPattern',
            # 'SummerPattern',
            # 'ElectionPattern',
            # 'PresidentialPattern',
            # 'AnnualPattern',
+           'Rolling90DaysSinceLastOrder'
     ]
     
-    attribitutes = [
-        'PctHoliday', 'AvgOrderItemTotal', 'AvgDiscount', 'PctWorkHours', 
-        'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
-    ]
+    # attribitutes = [
+    #     'PctHoliday', 'AvgOrderItemTotal', 'AvgDiscount', 'PctWorkHours', 
+    #     'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
+    # ]
     
 elif predict_variable == 'OneAndDone':
     
