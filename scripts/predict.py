@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from xgboost import XGBClassifier, plot_importance
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics import classification_report, roc_auc_score
@@ -150,6 +151,8 @@ shap.summary_plot(
     show=False            # <= keep Matplotlib figure open
 )
 
+gc.collect()
+
 # 2) grab the figure / axes SHAP just created
 fig = plt.gcf()           # current figure
 ax  = plt.gca()           # the main axis (beeswarm)
@@ -169,6 +172,17 @@ for name in X_train.columns:
 # for i in list(range(123, 133)):
 #     shap.plots.waterfall(shap_values[i])
 #     model.predict([X_test.iloc[i]])  # where i is the index of 
-    
-gc.collect()
 
+
+# # Force a constrained chart
+# feature_name = 'AvgOrderItemTotal'
+# lower, upper = np.percentile(X_test[feature_name], [1, 99])
+# inlier_mask = ((X_test[feature_name] >= lower) & (X_test[feature_name] <= upper)).to_numpy()
+
+# # Use filtered SHAP values and features
+# shap.dependence_plot(
+#     feature_name,
+#     shap_values.values[inlier_mask],
+#     X_test.iloc[inlier_mask],
+#     display_features=X_test.iloc[inlier_mask]
+# )
