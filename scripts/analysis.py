@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import timedelta
+from joblib import Parallel, delayed
+import gc
 
 # -------------------------------------------------------------------------
 # 1) LOAD AND CLEAN
@@ -38,10 +40,10 @@ shipping_map = {
     'ConciergeService': 'Rushed', 'FedEx2Day': 'Expedited', 'FedExOneRate2Day': 'Expedited',
     'UPS2DayAir': 'Expedited', 'FedExExpressSaver': 'Expedited', 'UPS3DaySelect': 'Expedited',
     'FedExInternationalPriority': 'Expedited', 'FedExInternationalConnectPlus': 'Expedited',
-    'PickupAtConferenceExpedited': 'Expedited', 'MiExpedited': 'Expedited', 'FirstClassMail': 'Normal',
-    'PriorityMail': 'Normal', 'USMail': 'Normal', 'UPSGround': 'Normal', 'FedExGroundHomeDelivery': 'Normal',
-    'FedExGround': 'Normal', 'FedExInternationalGround': 'Normal', 'PriorityMailInternational': 'Normal',
-    'FirstClassMailInternational': 'Normal', 'Standard': 'Normal', 'Other': 'Normal', 'Pickup': 'No-Ship',
+    'PickupAtConferenceExpedited': 'Expedited', 'MiExpedited': 'Expedited', 'FirstClassMail': 'NormalShipping',
+    'PriorityMail': 'NormalShipping', 'USMail': 'NormalShipping', 'UPSGround': 'NormalShipping', 'FedExGroundHomeDelivery': 'NormalShipping',
+    'FedExGround': 'NormalShipping', 'FedExInternationalGround': 'NormalShipping', 'PriorityMailInternational': 'NormalShipping',
+    'FirstClassMailInternational': 'NormalShipping', 'Standard': 'NormalShipping', 'Other': 'NormalShipping', 'Pickup': 'No-Ship',
     'PickupAtConference': 'No-Ship', 'PickupAtConferenceFree': 'No-Ship'
 }
 order_df['ShippingType'] = order_df['VendorShippingServiceID'].map(shipping_map).fillna('Unknown')
@@ -92,7 +94,26 @@ grouped_customers = order_df.groupby('CustomerId')
 def get_mode(x):
     return x.mode().iloc[0] if not x.mode().empty else np.nan
 
-agg_df = grouped_customers.agg(
+# Split up for speed
+# agg_df = grouped_customers.agg(
+#     TotalOrders=('OrderNumber', 'count'),
+#     AvgOrderItemTotal=('OrderItemPriceTotal', 'mean'),
+#     AvgPriceTotal=('PriceTotal', 'mean'),
+#     AvgDiscount=('TotalDiscount', 'mean'),
+#     AvgQuantity=('AvgItemQuantity', 'mean'),
+#     AvgRushFee=('RushFee', 'mean'),
+#     AvgShipPrice=('ShipPrice', 'mean'),
+#     AvgRushFeeAndShipPrice=('RushFeeAndShipPrice', 'mean'),
+#     ModeHour=('HourOfDay', get_mode),
+#     ModeDayOfWeek=('DayOfWeek', get_mode),
+#     ModeMonth=('Month', get_mode),
+#     FirstOrderDate=('OrderDate', 'min'),
+#     LastOrderDate=('OrderDate', 'max'),
+#     MeanDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.mean()),
+#     StdDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.std())
+# ).reset_index()
+
+agg_base = grouped_customers.agg(
     TotalOrders=('OrderNumber', 'count'),
     AvgOrderItemTotal=('OrderItemPriceTotal', 'mean'),
     AvgPriceTotal=('PriceTotal', 'mean'),
@@ -101,14 +122,35 @@ agg_df = grouped_customers.agg(
     AvgRushFee=('RushFee', 'mean'),
     AvgShipPrice=('ShipPrice', 'mean'),
     AvgRushFeeAndShipPrice=('RushFeeAndShipPrice', 'mean'),
-    ModeHour=('HourOfDay', get_mode),
-    ModeDayOfWeek=('DayOfWeek', get_mode),
-    ModeMonth=('Month', get_mode),
     FirstOrderDate=('OrderDate', 'min'),
     LastOrderDate=('OrderDate', 'max'),
-    MeanDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.mean()),
-    StdDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.std())
 ).reset_index()
+
+def custom_stats(group):
+    order_dates = group['OrderDate'].sort_values()
+    gaps = order_dates.diff().dt.days.dropna()
+    return {
+        'CustomerId': group['CustomerId'].iloc[0],
+        'MeanDaysBetweenOrders': gaps.mean(),
+        'StdDaysBetweenOrders': gaps.std(),
+        'ModeHour': group['HourOfDay'].mode().iloc[0] if not group['HourOfDay'].mode().empty else np.nan,
+        'ModeDayOfWeek': group['DayOfWeek'].mode().iloc[0] if not group['DayOfWeek'].mode().empty else np.nan,
+        'ModeMonth': group['Month'].mode().iloc[0] if not group['Month'].mode().empty else np.nan
+    }
+
+# Filter to customers with 2+ orders
+grouped = order_df.groupby('CustomerId')
+filtered_groups = {k: g for k, g in grouped if len(g) > 1}
+
+agg_custom = pd.DataFrame(
+    Parallel(n_jobs=8)(
+        delayed(custom_stats)(group) for group in filtered_groups.values()
+    )
+)
+
+
+agg_df = pd.merge(agg_base, agg_custom, on='CustomerId', how='left')
+
 
 # Percentage encodings
 def get_percentages(df, col, labels):
@@ -134,31 +176,131 @@ week_flags = ['FirstWeek', 'LastWeek']
 week_pct = order_df.groupby('CustomerId')[week_flags].mean().add_prefix('Pct')
 
 # Shipping %
-ship_pct = get_percentages(order_df, 'ShippingType', ['Rushed', 'Expedited', 'Normal', 'No-Ship'])
+ship_pct = get_percentages(order_df, 'ShippingType', ['Rushed', 'Expedited', 'NormalShipping', 'No-Ship'])
+
 
 # -------------------------------------------------------------------------
-# 4) CHURN FLAGS
+# 4) PATTERN DETECTORS
 # -------------------------------------------------------------------------
-today = order_df['OrderDate'].max()
-churn_df = agg_df.copy()
-churn_df['DaysSinceLastOrder'] = (today - churn_df['LastOrderDate']).dt.days
-churn_df['OneAndDone'] = churn_df['TotalOrders'] == 1
-churn_df['ThreeOrFewerAndChurned'] = (churn_df['TotalOrders'] <= 3) & (churn_df['DaysSinceLastOrder'] > 90)
-churn_df['NewCustomerLast90Days'] = churn_df['FirstOrderDate'] >= (today - timedelta(days=90))
 
-# Pattern flags
-churn_df['QuarterlyPattern'] = churn_df['MeanDaysBetweenOrders'].between(75, 105)
-churn_df['MonthlyPattern'] = churn_df['MeanDaysBetweenOrders'].between(25, 35)
-churn_df['SeasonalPattern'] = month_pct['PctSummer'] > 0.5
-churn_df['ElectionPattern'] = month_pct['PctElectionSeason'] > 0.4
+repeat_customers = agg_base['CustomerId'][agg_base['TotalOrders'] > 1]
+order_df_no_singles = order_df[order_df['CustomerId'].isin(repeat_customers)]
 
-churn_df['LikelyChurned'] = (
-    (churn_df['DaysSinceLastOrder'] > 90) &
-    ~(churn_df['QuarterlyPattern'] | churn_df['MonthlyPattern'] | churn_df['SeasonalPattern'] | churn_df['ElectionPattern'])
+def detect_repeating_pattern(group, months, min_years=2, min_gap_days=290, max_gap_days=2000):
+    filtered = group[group['OrderDate'].dt.month.isin(months)]
+    if len(filtered) < 2:
+        return False
+    years = filtered['OrderDate'].dt.year.nunique()
+    max_gap = filtered['OrderDate'].sort_values().diff().dt.days.max()
+    return (
+        (years >= min_years)
+        and (max_gap >= min_gap_days)
+        and (max_gap <= max_gap_days) # ensures it happens within a cycle
+    )
+
+
+holiday_flag = (order_df_no_singles.groupby('CustomerId', group_keys=False)
+    .apply(lambda g: detect_repeating_pattern(g, [11, 12], min_gap_days = 290), include_groups=False)
+    .rename('HolidayPattern'))
+
+
+summer_flag = (order_df_no_singles.groupby('CustomerId', group_keys=False)
+               .apply(lambda g: detect_repeating_pattern(g, [5, 6, 7, 8], min_gap_days=220), include_groups=False)
+               .rename('SummerPattern'))
+
+election_flag = (
+    order_df_no_singles[order_df_no_singles['ElectionSeason']]
+    .groupby('CustomerId', group_keys=False)
+    .apply(lambda g: detect_repeating_pattern(g, [9, 10], min_years=2, max_gap_days=800), include_groups=False)
+    .rename('ElectionPattern')
 )
 
+
+presidential_flag = (order_df_no_singles[order_df_no_singles['PresidentialElection']].groupby('CustomerId', group_keys=False)
+    .apply(lambda g: detect_repeating_pattern(g, [8, 9, 10], min_years=8, max_gap_days=1600), include_groups=False)
+    .rename('PresidentialPattern'))
+
+
+def detect_annual_pattern(group, min_pct=0.5, min_orders=2):
+    order_dates = group['OrderDate'].sort_values()
+    if len(order_dates) < min_orders:
+        return False
+    gaps = order_dates.diff().dt.days.dropna()
+    pct_annual = (gaps.between(315, 415)).mean()  # fraction of gaps in the annual range
+    return pct_annual >= min_pct
+
+annual_flag = order_df_no_singles.groupby('CustomerId', group_keys=False).apply(
+    detect_annual_pattern, include_groups=False
+).rename('AnnualPattern')
+
+
+
 # -------------------------------------------------------------------------
-# 5) FINAL MERGE
+# 5) CHURN FLAGS
+# -------------------------------------------------------------------------
+today = order_df['OrderDate'].max()
+churn_df = order_df.merge(agg_df, on='CustomerId', how='left')
+
+
+churn_df = (
+    churn_df
+    .merge(holiday_flag, on='CustomerId', how='left')
+    .merge(summer_flag, on='CustomerId', how='left')
+    .merge(election_flag, on='CustomerId', how='left')
+    .merge(presidential_flag, on='CustomerId', how='left')
+    .merge(annual_flag, on='CustomerId', how='left')
+)
+
+churn_df['DaysSinceLastOrder'] = (today - churn_df['LastOrderDate']).dt.days
+
+churn_df['NewCustomerLast90Days'] = churn_df['FirstOrderDate'] >= (today - timedelta(days=90))
+
+churn_df['ExceededCadence'] = (
+    churn_df['MeanDaysBetweenOrders'].notna() &                    # only customers with ≥2 orders
+    (churn_df['DaysSinceLastOrder'] >
+     1.5 * churn_df['MeanDaysBetweenOrders'])
+)
+
+
+churn_df['LikelyChurned'] = (
+    (
+        (churn_df['DaysSinceLastOrder'] > 100) &
+        ~(
+            (churn_df['AnnualPattern'] & (churn_df['DaysSinceLastOrder'] <= 290)) |
+            (churn_df['HolidayPattern'] & (churn_df['DaysSinceLastOrder'] <= 290)) |
+            (churn_df['SummerPattern'] & (churn_df['DaysSinceLastOrder'] <= 220)) |
+            (churn_df['ElectionPattern'] & (churn_df['DaysSinceLastOrder'] <= 700)) |
+            (churn_df['PresidentialPattern'] & (churn_df['DaysSinceLastOrder'] <= 1300))
+        )
+    ) |
+    (churn_df['ExceededCadence'] & churn_df['DaysSinceLastOrder'] > 35)
+)
+
+# This needs to go back in after the single-order people are added back
+churn_df['OneAndDone'] = ((churn_df['TotalOrders'] == 1) & (churn_df['LikelyChurned'])).astype(int)
+
+# This isn't necessarily accurate by the defintion of churn
+# I wanted to keep OneAndDone separate from ThreeOrFewerAndChurned, i.e.
+churn_df['ThreeOrFewerAndChurned'] = (churn_df['TotalOrders'] <= 3) & (churn_df['LikelyChurned'])
+
+# Pattern flags
+# Old definitions, percentage based and not rule-based
+# churn_df['QuarterlyPattern'] = churn_df['MeanDaysBetweenOrders'].between(75, 105)
+# churn_df['MonthlyPattern'] = churn_df['MeanDaysBetweenOrders'].between(25, 35)
+# churn_df['SeasonalPattern'] = month_pct['PctSummer'] > 0.5
+# churn_df['ElectionPattern'] = month_pct['PctElectionSeason'] > 0.4
+# churn_df['LikelyChurned'] = (
+#     (churn_df['DaysSinceLastOrder'] > 90) &
+#     ~(churn_df['QuarterlyPattern'] | churn_df['MonthlyPattern'] | churn_df['SeasonalPattern'] | churn_df['ElectionPattern'])
+# )
+
+
+
+
+
+
+# -------------------------------------------------------------------------
+# 6) FINAL MERGE
 # -------------------------------------------------------------------------
 customer_summary = (
     churn_df
@@ -175,3 +317,5 @@ customer_summary = (
 # customer_summary_subset = customer_summary.head(2000)
 # customer_summary_subset.to_csv("outputs/customer_summary_subset.csv", index=False)
 customer_summary.to_feather("outputs/customer_summary.feather")
+
+gc.collect()
