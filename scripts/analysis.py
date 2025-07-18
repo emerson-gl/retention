@@ -9,10 +9,10 @@ import gc
 # Decide if you want first or last orders
 first_or_last = 'first'
 # first_or_last = 'last'
-# first_or_last = None
+first_or_last = None
 
 # Decide how many orders
-number_of_orders = 2
+number_of_orders = 1 #if using 1, only run through line ~232 and save agg_df as customer_summary_[first/last]_order. Janky, I know.
 
 
 
@@ -24,9 +24,39 @@ os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 # Load data
 order_df = pd.read_feather("C:/Users/Graphicsland/Spyder/sharedData/raw_order_df.feather")
 order_item_df = pd.read_feather("C:/Users/Graphicsland/Spyder/sharedData/raw_order_item_df.feather")
+ppo_df = pd.read_feather("C:/Users/Graphicsland/Spyder/sharedData/raw_product_product_option_df.feather")
+
+# Create product flags
+ppo_df['IsSticker'] = (
+    ppo_df['Name'].str.contains('icker', case=False, na=False) &
+    ~ppo_df['Name'].str.contains('ample', case=False, na=False)
+)
+
+ppo_df['IsLabel'] = (
+    ppo_df['Name'].str.contains('abel', case=False, na=False) &
+    ~ppo_df['Name'].str.contains('ample', case=False, na=False)
+)
+
+order_item_df = order_item_df.merge(
+    ppo_df[['Id', 'IsSticker', 'IsLabel']],
+    left_on='ProductProductOptionId',
+    right_on='Id',
+    how='left'
+)
+
+# Count of non-deleted items per order
+item_count = order_item_df.groupby('OrderNumber').size().reset_index(name='ItemCount')
+order_df = order_df.merge(item_count, on='OrderNumber', how='left')
+
+
+
 
 # Clean
-order_df = order_df[(order_df['IsDeleted'] != True) & (order_df['AffiliateId'] == 2)].copy()
+order_df = order_df[
+    (order_df['IsDeleted'] != True) &
+    (order_df['AffiliateId'] == 2) &
+    (order_df['ShippedDateTime'].notna())
+].copy()
 order_item_df = order_item_df[order_item_df['IsDeleted'] != True].copy()
 # feedback_df feedback_df[feedback_df['IsDeleted'] != True].copy() # Not sure
 
@@ -41,27 +71,43 @@ order_df['Month'] = order_df['OrderDate'].dt.month
 order_df['DayOfMonth'] = order_df['OrderDate'].dt.day
 
 # Discount
-order_df['TotalDiscount'] = order_df[['PromoCodeDiscount', 'TaxableDiscountAmount', 'NonTaxableDiscountAmount']].fillna(0).sum(axis=1)
+order_df['PromoCodeDiscount'] = order_df[['PromoCodeDiscount']].fillna(0).sum(axis=1)
 
-# Shipping type mapping
-shipping_map = {
-    'FedExStandardOvernight': 'Rushed', 'FedExPriorityOvernight': 'Rushed', 'FedExFirstOvernight': 'Rushed',
-    'FedExSaturdayDelivery': 'Rushed', 'UPSNextDayAir': 'Rushed', 'UPSNextDayAirSaver': 'Rushed',
-    'UPSNextDayAirEarly': 'Rushed', 'UPSSaturdayDelivery': 'Rushed', 'MessengerService': 'Rushed',
-    'ConciergeService': 'Rushed', 'FedEx2Day': 'Expedited', 'FedExOneRate2Day': 'Expedited',
-    'UPS2DayAir': 'Expedited', 'FedExExpressSaver': 'Expedited', 'UPS3DaySelect': 'Expedited',
-    'FedExInternationalPriority': 'Expedited', 'FedExInternationalConnectPlus': 'Expedited',
-    'PickupAtConferenceExpedited': 'Expedited', 'MiExpedited': 'Expedited', 'FirstClassMail': 'NormalShipping',
-    'PriorityMail': 'NormalShipping', 'USMail': 'NormalShipping', 'UPSGround': 'NormalShipping', 'FedExGroundHomeDelivery': 'NormalShipping',
-    'FedExGround': 'NormalShipping', 'FedExInternationalGround': 'NormalShipping', 'PriorityMailInternational': 'NormalShipping',
-    'FirstClassMailInternational': 'NormalShipping', 'Standard': 'NormalShipping', 'Other': 'NormalShipping', 'Pickup': 'No-Ship',
-    'PickupAtConference': 'No-Ship', 'PickupAtConferenceFree': 'No-Ship'
-}
-order_df['ShippingType'] = order_df['VendorShippingServiceID'].map(shipping_map).fillna('Unknown')
+# Revised shipping flags
+order_df['ShippingType'] = np.select(
+    [
+        (order_df['OrderItemPriceTotal'] < 75) & (order_df['ShippingTotal'] == 0),         # Free but slow
+        (order_df['OrderItemPriceTotal'] < 75) & (order_df['ShippingTotal'] == 4),         # Paid 2-day
+        (order_df['OrderItemPriceTotal'] >= 75) & (order_df['ShippingTotal'] == 0),        # Free 2-day
+        (order_df['ShippingTotal'] > 4)                                                    # Expedited
+    ],
+    [
+        'NormalShipping',
+        'TwoDayShipping',
+        'TwoDayShipping',
+        'ExpeditedShipping'
+    ],
+    default='UnknownShipping'
+)
+
+order_flags = (
+    order_item_df
+    .groupby('OrderNumber')[['IsSticker', 'IsLabel']]
+    .any()  # True if any item in the order is a sticker/label
+    .rename(columns={'IsSticker': 'OrderContainsSticker', 'IsLabel': 'OrderContainsLabel'})
+    .reset_index()
+)
+
 
 # Average quantity per order
 avg_quantity = order_item_df.groupby('OrderNumber')['Quantity'].mean().reset_index(name='AvgItemQuantity')
 order_df = order_df.merge(avg_quantity, on='OrderNumber', how='left')
+
+# Merge sticker/label flags into order_df
+order_df = order_df.merge(order_flags, on='OrderNumber', how='left')
+order_df['OrderContainsSticker'] = order_df['OrderContainsSticker'].fillna(False)
+order_df['OrderContainsLabel'] = order_df['OrderContainsLabel'].fillna(False)
+
 
 # -------------------------------------------------------------------------
 # 2) TEMPORAL + ONE-HOT ENCODINGS
@@ -101,11 +147,13 @@ order_df.to_feather("outputs/order_df_retention.feather")
 
 # Get each customer's relevant orders
 if first_or_last == 'first':
-    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).head(number_of_orders)
+    selected_orders = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).head(number_of_orders)
 elif first_or_last == 'last':
-    grouped_customers = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(number_of_orders)
+    selected_orders = order_df.sort_values('OrderDate').groupby('CustomerId', as_index=False).tail(number_of_orders)
 else:
-    grouped_customers = order_df.groupby('CustomerId')
+    selected_orders = order_df.copy()
+
+grouped_customers = selected_orders.groupby('CustomerId')
 
 
 def get_mode(x):
@@ -116,7 +164,7 @@ def get_mode(x):
 #     TotalOrders=('OrderNumber', 'count'),
 #     AvgOrderItemTotal=('OrderItemPriceTotal', 'mean'),
 #     AvgPriceTotal=('PriceTotal', 'mean'),
-#     AvgDiscount=('TotalDiscount', 'mean'),
+#     AvgPromoDiscount=('PromoCodeDiscount', 'mean'),
 #     AvgQuantity=('AvgItemQuantity', 'mean'),
 #     AvgRushFee=('RushFee', 'mean'),
 #     AvgShipPrice=('ShipPrice', 'mean'),
@@ -130,11 +178,19 @@ def get_mode(x):
 #     StdDaysBetweenOrders=('OrderDate', lambda x: x.sort_values().diff().dt.days.std())
 # ).reset_index()
 
-agg_base = grouped_customers.groupby('CustomerId').agg(
+
+
+agg_base = grouped_customers.agg(
     TotalOrders=('OrderNumber', 'count'),
+    # For unit economics
+    AvgOrderValue=('PriceTotal', 'mean'),
+    MaxOrderValue=('PriceTotal', 'max'),
+    MinOrderValue=('PriceTotal', 'min'),
+    LifetimeValue=('PriceTotal', 'sum'),
+    AvgItemsPerOrder=('ItemCount', 'mean'),
     AvgOrderItemTotal=('OrderItemPriceTotal', 'mean'),
     AvgPriceTotal=('PriceTotal', 'mean'),
-    AvgDiscount=('TotalDiscount', 'mean'),
+    AvgPromoDiscount=('PromoCodeDiscount', 'mean'),
     AvgQuantity=('AvgItemQuantity', 'mean'),
     AvgRushFee=('RushFee', 'mean'),
     AvgShipPrice=('ShipPrice', 'mean'),
@@ -175,6 +231,10 @@ agg_custom = pd.DataFrame(
 
 agg_df = pd.merge(agg_base, agg_custom, on='CustomerId', how='left')
 
+# agg_df.to_feather("outputs/customer_summary_first_order.feather")
+# agg_df.to_feather("outputs/customer_summary_last_order.feather")
+
+
 
 # Percentage encodings
 def get_percentages(df, col, labels):
@@ -200,7 +260,11 @@ week_flags = ['FirstWeek', 'LastWeek']
 week_pct = order_df.groupby('CustomerId')[week_flags].mean().add_prefix('Pct')
 
 # Shipping %
-ship_pct = get_percentages(order_df, 'ShippingType', ['Rushed', 'Expedited', 'NormalShipping', 'No-Ship'])
+ship_pct = get_percentages(order_df, 'ShippingType', ['NormalShipping', 'TwoDayShipping', 'ExpeditedShipping'])
+
+# Product type %
+sticker_pct = order_df.groupby('CustomerId')['OrderContainsSticker'].mean().rename('PctOrdersWithSticker')
+label_pct = order_df.groupby('CustomerId')['OrderContainsLabel'].mean().rename('PctOrdersWithLabel')
 
 
 # -------------------------------------------------------------------------
@@ -263,11 +327,9 @@ annual_flag = order_df_no_singles.groupby('CustomerId', group_keys=False).apply(
 # 5) CHURN FLAGS
 # -------------------------------------------------------------------------
 today = order_df['OrderDate'].max()
-churn_df = order_df.merge(agg_df, on='CustomerId', how='left')
-
 
 churn_df = (
-    churn_df
+    agg_df
     .merge(holiday_flag, on='CustomerId', how='left')
     .merge(summer_flag, on='CustomerId', how='left')
     .merge(election_flag, on='CustomerId', how='left')
@@ -287,6 +349,7 @@ churn_df['ExceededCadence'] = (
 
 
 churn_df['LikelyChurned'] = (
+    (churn_df['ExceededCadence'] & churn_df['DaysSinceLastOrder'] > 35) |
     (
         (churn_df['DaysSinceLastOrder'] > 100) &
         ~(
@@ -296,9 +359,9 @@ churn_df['LikelyChurned'] = (
             (churn_df['ElectionPattern'] & (churn_df['DaysSinceLastOrder'] <= 700)) |
             (churn_df['PresidentialPattern'] & (churn_df['DaysSinceLastOrder'] <= 1300))
         )
-    ) |
-    (churn_df['ExceededCadence'] & churn_df['DaysSinceLastOrder'] > 35)
+    )
 )
+
 
 # This needs to go back in after the single-order people are added back
 churn_df['OneAndDone'] = ((churn_df['TotalOrders'] == 1) & (churn_df['LikelyChurned'])).astype(int)
@@ -321,6 +384,26 @@ churn_df['TwoAndChurned'] = (churn_df['TotalOrders'] == 2) & (churn_df['LikelyCh
 
 
 
+# -------------------------------------------------------------------------
+# MOMENTUM METRICS
+# -------------------------------------------------------------------------
+
+# Ensure First and Last order dates are datetime
+churn_df['FirstOrderDate'] = pd.to_datetime(churn_df['FirstOrderDate'], errors='coerce')
+churn_df['LastOrderDate'] = pd.to_datetime(churn_df['LastOrderDate'], errors='coerce')
+
+# Compute duration of customer activity (avoid division by zero)
+churn_df['CustomerDurationDays'] = (churn_df['LastOrderDate'] - churn_df['FirstOrderDate']).dt.days.clip(lower=1)
+
+# Recent value rate (spend per day)
+churn_df['RecentValueRate'] = churn_df['LifetimeValue'] / churn_df['CustomerDurationDays']
+
+# Recent frequency (orders per day)
+churn_df['RecentFrequency'] = churn_df['TotalOrders'] / churn_df['CustomerDurationDays']
+
+# Handle any infinite or missing values
+churn_df['RecentValueRate'] = churn_df['RecentValueRate'].replace([np.inf, -np.inf], np.nan).fillna(0)
+churn_df['RecentFrequency'] = churn_df['RecentFrequency'].replace([np.inf, -np.inf], np.nan).fillna(0)
 
 
 
@@ -335,16 +418,21 @@ customer_summary = (
     .merge(month_pct, on='CustomerId', how='left')
     .merge(week_pct, on='CustomerId', how='left')
     .merge(ship_pct, on='CustomerId', how='left')
+    .merge(sticker_pct, on='CustomerId', how='left')
+    .merge(label_pct, on='CustomerId', how='left')
 )
+
 
 # Save if needed
 # customer_summary.to_csv("outputs/customer_summary.csv", index=False)
 # customer_summary_subset = customer_summary.head(2000)
 # customer_summary_subset.to_csv("outputs/customer_summary_subset.csv", index=False)
-filename = f"outputs/customer_summary_{first_or_last}_{number_of_orders}_order.feather"
+if first_or_last == None:
+    filename = "outputs/customer_summary.feather"
+else:
+    filename = f"outputs/customer_summary_{first_or_last}_{number_of_orders}_orders.feather"
 
 # Save
 customer_summary.to_feather(filename)
-
 
 gc.collect()

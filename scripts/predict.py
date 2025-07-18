@@ -23,7 +23,7 @@ if predict_variable == 'LikelyChurned':
     
     # LikelyChurned
     # attributes = ['TotalOrders', 'AvgOrderItemTotal', 'AvgPriceTotal',
-    #        'AvgDiscount', 'AvgQuantity', 'ModeHour', 'ModeDayOfWeek',
+    #        'AvgPromoDiscount', 'AvgQuantity', 'ModeHour', 'ModeDayOfWeek',
     #        'PctMorning', 'PctAfternoon', 'PctEvening', 'PctEarlyMorning',
     #        'PctWorkHours', 'PctWorkday', 'PctHoliday', 'PctSummer',
     #        'PctElectionSeason', 'PctPresidentialElection', 'PctFirstWeek',
@@ -36,7 +36,7 @@ if predict_variable == 'LikelyChurned':
     # ]
     
     attributes = ['TotalOrders', 'AvgOrderItemTotal',
-           'AvgDiscount', 
+           'AvgPromoDiscount', 
            # 'AvgQuantity',
            # 'PctHoliday', 
            # 'PctSummer',
@@ -54,7 +54,7 @@ if predict_variable == 'LikelyChurned':
     ]
     
     # attributes = [
-    #     'PctHoliday', 'AvgOrderItemTotal', 'AvgDiscount', 'PctWorkHours', 
+    #     'PctHoliday', 'AvgOrderItemTotal', 'AvgPromoDiscount', 'PctWorkHours', 
     #     'PctSummer', 'PctPresidentialElection', 'PctNormalShipping', 
     # ]
     
@@ -67,7 +67,7 @@ elif predict_variable == 'TwoAndChurned':
             
     # LikelyChurned
     attributes = ['AvgOrderItemTotal',
-           'AvgDiscount', 
+           'AvgPromoDiscount', 
            # 'AvgQuantity',
            'PctHoliday', 
            # 'PctSummer',
@@ -218,7 +218,7 @@ for name in X_train.columns:
 
 
 # # Force a constrained chart
-# feature_name = 'AvgDiscount'
+# feature_name = 'AvgPromoDiscount'
 # lower, upper = np.percentile(X_test[feature_name], [1, 99])
 # inlier_mask = ((X_test[feature_name] >= lower) & (X_test[feature_name] <= upper)).to_numpy()
 
