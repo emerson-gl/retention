@@ -17,19 +17,30 @@ os.chdir('C:/Users/Graphicsland/Spyder/retention')
 
 # ───────────────────────── 1  LOAD + CLEAN ─────────────────────────
 order_df = pd.read_feather('../sharedData/raw_order_df.feather')
+order_df = (
+    order_df
+    [ (order_df['IsDeleted'] != 1) & (order_df['AffiliateId'] == 2) ]
+    .dropna(subset=['ShippedDateTime'])
+    .copy()
+)
+
 item_df  = pd.read_feather('../sharedData/raw_order_item_df.feather')
+item_df = (
+    item_df[(item_df['IsDeleted'] != 1)]
+    .copy()
+)
 ppo      = pd.read_feather('../sharedData/raw_product_product_option_df.feather')
 
 # For testing
-order_df['ShippedDateTime'] = pd.to_datetime(order_df['ShippedDateTime'], errors='coerce')
-order_df = order_df[
-    ((order_df['ShippedDateTime'] >= '2021-11-01') &
-    (order_df['ShippedDateTime'] < '2022-01-01')) |
-    ((order_df['ShippedDateTime'] >= '2022-11-01') &
-    (order_df['ShippedDateTime'] < '2023-01-01')) |
-    ((order_df['ShippedDateTime'] >= '2023-11-01') &
-    (order_df['ShippedDateTime'] < '2024-01-01')) 
-]
+# order_df['ShippedDateTime'] = pd.to_datetime(order_df['ShippedDateTime'], errors='coerce')
+# order_df = order_df[
+#     ((order_df['ShippedDateTime'] >= '2021-11-01') &
+#     (order_df['ShippedDateTime'] < '2022-01-01')) |
+#     ((order_df['ShippedDateTime'] >= '2022-11-01') &
+#     (order_df['ShippedDateTime'] < '2023-01-01')) |
+#     ((order_df['ShippedDateTime'] >= '2023-11-01') &
+#     (order_df['ShippedDateTime'] < '2024-01-01')) 
+# ]
 # order_df = order_df[
 #     ((order_df['ShippedDateTime'] >= '2021-11-01') &
 #     (order_df['ShippedDateTime'] < '2022-01-01')) |
@@ -52,12 +63,6 @@ ppo['IsPouch']   = ppo['Name'].str.contains('ouch' ,case=False,na=False) & ~ppo[
 item_df          = item_df.merge(ppo[['Id','IsSticker','IsLabel', 'IsPouch']],
                                  left_on='ProductProductOptionId', right_on='Id', how='left')
 
-order_df = (
-    order_df
-    [ (order_df['IsDeleted'] != 1) & (order_df['AffiliateId'] == 2) ]
-    .dropna(subset=['ShippedDateTime'])
-    .copy()
-)
 
 
 # basic per-order aggregates

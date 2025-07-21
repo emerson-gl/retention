@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime
 import os
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
@@ -11,20 +12,34 @@ import shap
 import matplotlib.patches as mpatches
 
 
+
+cutoff_date = pd.Timestamp('2023-01-01')
+
 mask_feature = 'FirstOrderContainsLabel'
 mask_dict = {mask_feature: True}
 
-mask_dict = None
+# mask_dict = None
 
 
 os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 
+# ───────────────────────── 1  LOAD + CLEAN ─────────────────────────
 customer_summary = pd.read_feather("outputs/customer_summary_first_order.feather")
 customer_summary['HasPromoDiscount'] = customer_summary['AvgPromoDiscount'] < 0
 
-# ───────────────────────── 1  LOAD + CLEAN ─────────────────────────
 order_df = pd.read_feather('../sharedData/raw_order_df.feather')
+order_df = (
+    order_df[(order_df['IsDeleted'] != 1) & (order_df['AffiliateId'] == 2)]
+    .dropna(subset=['ShippedDateTime'])
+    .copy()
+)
+
 item_df  = pd.read_feather('../sharedData/raw_order_item_df.feather')
+item_df = (
+    item_df[(item_df['IsDeleted'] != 1)]
+    .copy()
+)
+
 ppo      = pd.read_feather('../sharedData/raw_product_product_option_df.feather')
 
 ppo['IsSticker'] = ppo['Name'].str.contains('icker',case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
@@ -32,13 +47,6 @@ ppo['IsLabel']   = ppo['Name'].str.contains('abel' ,case=False,na=False) & ~ppo[
 ppo['IsPouch']   = ppo['Name'].str.contains('ouch' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
 item_df          = item_df.merge(ppo[['Id','IsSticker','IsLabel', 'IsPouch']],
                                  left_on='ProductProductOptionId', right_on='Id', how='left')
-
-order_df = (
-    order_df
-    [ (order_df['IsDeleted'] != 1) & (order_df['AffiliateId'] == 2) ]
-    .dropna(subset=['ShippedDateTime'])
-    .copy()
-)
 
 first_orders = (
     order_df
@@ -71,9 +79,7 @@ first_order_flags.rename(columns={
 }, inplace=True)
 
 customer_summary = customer_summary.merge(first_order_flags, on='CustomerId', how='left')
-
-
-
+customer_summary = customer_summary[customer_summary['FirstOrderDate'] >= cutoff_date]
 
 
 if mask_dict:
