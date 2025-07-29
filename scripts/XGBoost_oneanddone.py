@@ -15,8 +15,9 @@ import matplotlib.patches as mpatches
 
 cutoff_date = pd.Timestamp('2023-01-01')
 
-mask_feature = 'FirstOrderContainsLabel'
-mask_dict = {mask_feature: True}
+mask_feature = 'PctOrdersWithSticker'
+mask_feature = 'PctOrdersWithLabel'
+mask_dict = {mask_feature: 1}
 
 # mask_dict = None
 
@@ -27,6 +28,7 @@ os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 customer_summary = pd.read_feather("outputs/customer_summary_first_order.feather")
 customer_summary['HasPromoDiscount'] = customer_summary['AvgPromoDiscount'] < 0
 
+
 order_df = pd.read_feather('../sharedData/raw_order_df.feather')
 order_df = (
     order_df[(order_df['IsDeleted'] != 1) & (order_df['AffiliateId'] == 2)]
@@ -34,74 +36,108 @@ order_df = (
     .copy()
 )
 
-item_df  = pd.read_feather('../sharedData/raw_order_item_df.feather')
-item_df = (
-    item_df[(item_df['IsDeleted'] != 1)]
-    .copy()
-)
-
-ppo      = pd.read_feather('../sharedData/raw_product_product_option_df.feather')
-
-ppo['IsSticker'] = ppo['Name'].str.contains('icker',case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-ppo['IsLabel']   = ppo['Name'].str.contains('abel' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-ppo['IsPouch']   = ppo['Name'].str.contains('ouch' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-item_df          = item_df.merge(ppo[['Id','IsSticker','IsLabel', 'IsPouch']],
-                                 left_on='ProductProductOptionId', right_on='Id', how='left')
 
 first_orders = (
     order_df
     .sort_values('PlacedDateTime')
     .groupby('CustomerId', as_index=False)
-    .first()  # or .head(1) if you want more flexibility
+    .first()
 )
 
-# shipping type
 first_orders['ShippingType'] = np.select(
-    [(first_orders['OrderItemPriceTotal']<75)&(first_orders['ShippingTotal']==0)],
-    ['NormalShipping'],
-    default='OtherShipping')
+    [
+        (first_orders['OrderItemPriceTotal'] < 75) & (first_orders['ShippingTotal'] == 0),
+        (first_orders['OrderItemPriceTotal'] >= 75) & (first_orders['ShippingTotal'] == 0),
+        (first_orders['OrderItemPriceTotal'] < 75) & (first_orders['ShippingTotal'] == 4),
+        (first_orders['ShippingTotal'] > 4)
+    ],
+    [
+        'NormalShipping',
+        'TwoDayShipping',
+        'TwoDayShipping',
+        'ExpeditedShipping'
+    ],
+    default='UncategorizedShipping'
+)
+
+# ───────────────────────── ADD: Load BigQuery Data ─────────────────────────
+bq_df = pd.read_feather('../sharedData/bigquery_events.feather')
+
+def most_common(series):
+    filtered = series.dropna()
+    filtered = filtered[~filtered.astype(str).str.lower().isin(['none', ''])]
+    return filtered.mode().iloc[0] if not filtered.empty else None
 
 
-# basic per-order aggregates
-counts   = item_df.groupby('OrderNumber').size().rename('ItemCount')
-avg_qty  = item_df.groupby('OrderNumber')['Quantity'].mean().rename('AvgItemQuantity')
-flags    = (item_df.groupby('OrderNumber')[['IsSticker','IsLabel', 'IsPouch']].any()
-            .rename(columns={'IsSticker':'OrderContainsSticker','IsLabel':'OrderContainsLabel','IsPouch':'OrderContainsPouch'}))
+# Ensure OrderNumber strings are used for matching
+first_orders['OrderNumber_str'] = first_orders['OrderNumber'].astype(str)
+bq_df['param_transaction_id_str'] = bq_df['param_transaction_id'].astype(str)
 
-first_orders = first_orders.merge(flags, on='OrderNumber', how='left')
+# Collapse BQ data to one row per transaction
+bq_df_collapsed = bq_df.groupby('param_transaction_id_str').agg({
+    'traffic_source_medium': most_common,
+    'traffic_source_source': most_common,
+    'traffic_source_name': most_common,
+    'param_medium': most_common,
+    'param_source': most_common,
+    'device_category': most_common,
+    'device_operating_system': most_common,
+    'geo_metro': most_common,
+}).reset_index()
 
+# Merge into first_orders
+first_orders = first_orders.merge(
+    bq_df_collapsed,
+    left_on='OrderNumber_str',
+    right_on='param_transaction_id_str',
+    how='left'
+)
 
-first_order_flags = first_orders[['CustomerId', 'ShippingType', 'OrderContainsLabel', 'OrderContainsSticker', 'OrderContainsPouch']].copy()
-first_order_flags.rename(columns={
-    'OrderContainsLabel': 'FirstOrderContainsLabel',
-    'OrderContainsSticker': 'FirstOrderContainsSticker',
-    'OrderContainsPouch': 'FirstOrderContainsPouch'
-}, inplace=True)
-
-customer_summary = customer_summary.merge(first_order_flags, on='CustomerId', how='left')
+# Merge into customer_summary as before
+customer_summary = customer_summary.merge(first_orders, on='CustomerId', how='left')
 customer_summary = customer_summary[customer_summary['FirstOrderDate'] >= cutoff_date]
-
 
 if mask_dict:
     for k, v in mask_dict.items():
         customer_summary = customer_summary[customer_summary[k] == v]
 
+
 prediction_feature = 'OneAndDone'
+
+# xgb_features = [
+#     'AvgOrderItemTotal',
+#     'AvgItemsPerOrder',
+#     'HasPromoDiscount',
+#     'AvgRushFeeAndShipPrice',
+#     'ShippingType'
+#     # 'FirstOrderContainsLabel',
+# ]
+
+# categorical_cols = [
+#     # 'FirstOrderContainsLabel', 
+#     'ShippingType',
+#     'HasPromoDiscount']
+
 xgb_features = [
-    'AvgOrderItemTotal',
-    'AvgItemsPerOrder',
-    'HasPromoDiscount',
-    'AvgRushFeeAndShipPrice',
-    'ShippingType'
-    # 'FirstOrderContainsLabel',
+    # 'PctWorkHours',
+    'PctWorkday',
+    'traffic_source_medium',
+    # 'traffic_source_source',
+    # 'traffic_source_name',
+    # 'param_medium',
+    # 'param_source',
+    'device_category',
+    # 'device_operating_system',
 ]
+
+categorical_cols = xgb_features
 
 xgb_data = customer_summary[[prediction_feature] + xgb_features].dropna().copy()
 
-categorical_cols = [
-    # 'FirstOrderContainsLabel', 
-    'ShippingType',
-    'HasPromoDiscount']
+# Subsample for testing
+# xgb_data = xgb_data.sample(n=20000, random_state=42)  # TEMP: subsample for testing
+
+
 
 label_encoders = {}
 for col in categorical_cols:
@@ -125,7 +161,8 @@ xgb = XGBClassifier(
 xgb.fit(X_train, y_train)
 
 y_probs = xgb.predict_proba(X_test)[:, 1]
-threshold = 0.425
+threshold = 0.45
+# threshold = 0.62
 y_pred_thresh = (y_probs > threshold).astype(int)
 
 title_suffix = f"\n(Filter: {', '.join([f'{k}={v}' for k, v in mask_dict.items()])})" if mask_dict else ""
@@ -179,48 +216,50 @@ plt.title(f"SHAP Summary Plot{title_suffix}")
 plt.savefig("outputs/shap_summary_plot.png", dpi=300)
 plt.show()
 
-shap.dependence_plot("AvgOrderItemTotal", shap_values.values, X_test, interaction_index="ShippingType", show=False)
-plt.tight_layout(); plt.show()
 
-shap.dependence_plot("ShippingType", shap_values.values, X_test, interaction_index="AvgOrderItemTotal", show=False)
-plt.tight_layout(); plt.show()
+# Hard coded for customer data below
+# shap.dependence_plot("AvgOrderItemTotal", shap_values.values, X_test, interaction_index="ShippingType", show=False)
+# plt.tight_layout(); plt.show()
 
-shap.dependence_plot("AvgOrderItemTotal", shap_values.values, X_test, interaction_index="AvgRushFeeAndShipPrice", show=False)
-plt.tight_layout(); plt.show()
+# shap.dependence_plot("ShippingType", shap_values.values, X_test, interaction_index="AvgOrderItemTotal", show=False)
+# plt.tight_layout(); plt.show()
 
-shap.dependence_plot("AvgRushFeeAndShipPrice", shap_values.values, X_test, interaction_index="AvgOrderItemTotal", show=False)
-plt.tight_layout(); plt.show()
+# shap.dependence_plot("AvgOrderItemTotal", shap_values.values, X_test, interaction_index="AvgRushFeeAndShipPrice", show=False)
+# plt.tight_layout(); plt.show()
+
+# shap.dependence_plot("AvgRushFeeAndShipPrice", shap_values.values, X_test, interaction_index="AvgOrderItemTotal", show=False)
+# plt.tight_layout(); plt.show()
 
 
-shap_vals = shap_values.values[:, X_test.columns.get_loc('ShippingType')]
-shipping = X_test['ShippingType'].values
-order_val = X_test['AvgOrderItemTotal'].values
-colors = []
+# shap_vals = shap_values.values[:, X_test.columns.get_loc('ShippingType')]
+# shipping = X_test['ShippingType'].values
+# order_val = X_test['AvgOrderItemTotal'].values
+# colors = []
 
-for s, v in zip(shipping, order_val):
-    if s == 0 and v < 50:
-        colors.append("purple")
-    elif s == 0 and v >= 50:
-        colors.append("green")
-    elif s == 1 and v < 75:
-        colors.append("orange")
-    else:
-        colors.append("blue")
+# for s, v in zip(shipping, order_val):
+#     if s == 0 and v < 50:
+#         colors.append("purple")
+#     elif s == 0 and v >= 50:
+#         colors.append("green")
+#     elif s == 1 and v < 75:
+#         colors.append("orange")
+#     else:
+#         colors.append("blue")
 
-plt.figure(figsize=(10, 1.5))
-y_jitter = np.random.normal(loc=0, scale=0.05, size=len(shap_vals))
-plt.scatter(shap_vals, y_jitter, c=colors, alpha=0.6, s=5)
+# plt.figure(figsize=(10, 1.5))
+# y_jitter = np.random.normal(loc=0, scale=0.05, size=len(shap_vals))
+# plt.scatter(shap_vals, y_jitter, c=colors, alpha=0.6, s=5)
 
-plt.yticks([])
-plt.xlabel("SHAP Value for ShippingType")
-plt.title(f"SHAP Value Number Line by Shipping Type and Order Value{title_suffix})")
-plt.axvline(0, color='gray', linestyle='--', linewidth=1)
-legend_elements = [
-    mpatches.Patch(color='purple', label='Normal, < $50'),
-    mpatches.Patch(color='green', label='Normal, ≥ $50'),
-    mpatches.Patch(color='orange', label='Other, ≥ $75'),
-    mpatches.Patch(color='blue', label='Other, < $75'),
-]
-plt.legend(handles=legend_elements, bbox_to_anchor=(1.02, 1), loc='upper left')
-plt.tight_layout()
-plt.show()
+# plt.yticks([])
+# plt.xlabel("SHAP Value for ShippingType")
+# plt.title(f"SHAP Value Number Line by Shipping Type and Order Value{title_suffix})")
+# plt.axvline(0, color='gray', linestyle='--', linewidth=1)
+# legend_elements = [
+#     mpatches.Patch(color='purple', label='Normal, < $50'),
+#     mpatches.Patch(color='green', label='Normal, ≥ $50'),
+#     mpatches.Patch(color='orange', label='Other, ≥ $75'),
+#     mpatches.Patch(color='blue', label='Other, < $75'),
+# ]
+# plt.legend(handles=legend_elements, bbox_to_anchor=(1.02, 1), loc='upper left')
+# plt.tight_layout()
+# plt.show()

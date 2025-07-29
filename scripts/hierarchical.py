@@ -13,7 +13,7 @@ start_time = time.time()
 # ───────────────────────── SETUP ─────────────────────────
 number_of_clusters = 5
 cutoff_date = pd.Timestamp('2023-01-01')
-mask_dict = {'FirstOrderContainsLabel': True}
+mask_dict = {'PctOrdersWithSticker': 1}
 
 os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 

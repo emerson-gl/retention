@@ -7,7 +7,8 @@ from sklearn.tree import DecisionTreeClassifier, plot_tree
 # ─────────────── SETUP ───────────────
 os.chdir('C:/Users/Graphicsland/Spyder/retention')
 cutoff_date = pd.Timestamp('2023-01-01')
-mask_dict = {'FirstOrderContainsLabel': True}
+mask_dict = {'PctOrdersWithSticker': 1}
+mask_dict = {'PctOrdersWithLabel': 1}
 
 # ─────────────── LOAD ───────────────
 customer_summary = pd.read_feather("outputs/customer_summary_first_order.feather")
@@ -124,76 +125,99 @@ plot_tree(tree_clf, feature_names=X.columns, class_names=['Retained', 'OneAndDon
 plt.title("Decision Tree Predicting OneAndDone")
 plt.show()
 
-
-def label_leaf(row):
+def name_leaf_sticker(row):
     items = row['AvgItemsPerOrder']
     total = row['AvgOrderItemTotal']
-    promo = row['PctUsedPromo']
-    churn = row['PctOneAndDone']
+    promo = row['HasPromoDiscount']
     
-    # One-and-done zone: very low item count and low order total
-    if items < 1.5 and total < 100:
-        return 'One-and-Done Zone'
-
-    # Bargain Browsers: low order value, low item count, uses promo
-    if items < 3 and total < 250 and promo > 0.5:
-        return 'Bargain Browser'
-    
-    # High Rollers: large orders, many items, low promo use
-    if items > 6 and total > 400 and promo < 0.3:
-        return 'High Roller'
-
-    # Bulk Buyers: high item count, moderate-high total
-    if items > 5 and total > 200:
+    # 📦 Large recurring orders
+    if (items > 3 and total > 175) or total > 250 or items > 6:
         return 'Bulk Buyer'
 
-    # Steady Shippers: moderate behavior
-    if 2 <= items <= 6 and 100 <= total <= 400 and promo < 0.5 and churn < 0.6:
-        return 'Steady Shipper'
-    
-    # Otherwise: fallback
+    # 🚫 Clear churn risk
+    if items < 3 and total < 75:
+        return 'One-and-Done Zone'
+
+    # 🧠 Bargain-focused
+    if items < 3 and total < 250 and promo == 1:
+        return 'Bargain Shopper'
+
+    # 🛍️ Value-conscious but retained
+    if 2 <= items <= 6 and 100 <= total <= 450:
+        return 'Value Seeker'
+
+    # 📬 Normal promo-free shoppers
+    if 2 <= items <= 6:
+        return 'Normal Shopper'
+
+
     return 'Uncategorized'
 
 
+def name_leaf_label(row):
+    items = row['AvgItemsPerOrder']
+    total = row['AvgOrderItemTotal']
+    promo = row['HasPromoDiscount']
 
-# Apply labeling function
-summary['LeafLabel'] = summary.apply(label_leaf, axis=1)
+    # High volume, high total — relaxed Bulk Buyer
+    if total > 300:
+        return 'Bulk Buyer'
 
+    # Very low item count, very low promo — One-and-Done
+    if items < 3 and total < 100:
+        return 'One-and-Done Zone'
 
-def refine_uncategorized(row):
-    if row['LeafLabel'] != 'Uncategorized':
-        return row['LeafLabel']
-    
-    if row['PctUsedPromo'] >= 0.9:
-        return 'Promo Seeker'
-    
-    if row['PctUsedPromo'] <= 0.1:
+    # Moderate item count, moderate total, low promo — Steady Shipper
+    if  items > 2 and total > 100:
+        return 'Steady Shipper'
+
+    # Mid to low quantity shoppers with moderate promo — Bargain Browser
+    if  items > 2 and total < 100:
+        return 'Low value high items'
+
+    # Zero promo usage — Non-Promo Explorer
+    if promo == 0:
         return 'Non-Promo Explorer'
+
+    # Everything else — fallback
+    return 'Selective Spender'
+
+
+def apply_segment_naming(row, mask_dict):
+    if mask_dict.get('FirstOrderContainsSticker', False):
+        return name_leaf_sticker(row)
+    elif mask_dict.get('FirstOrderContainsLabel', False):
+        return name_leaf_label(row)
+    else:
+        return 'Uncategorized'
+
+customer_summary['SegmentName'] = customer_summary.apply(lambda row: apply_segment_naming(row, mask_dict), axis=1)
+
+
+def grouped_summary_from_customer_summary(df):
+    grouped = (
+        df
+        .groupby('SegmentName')
+        .agg(
+            TotalCustomers=('CustomerId', 'count'),
+            TotalValue=('AvgOrderItemTotal', 'sum'),
+            AvgItemsPerOrder=('AvgItemsPerOrder', 'mean'),
+            AvgOrderItemTotal=('AvgOrderItemTotal', 'mean'),
+            MedianOrderItemTotal=('AvgOrderItemTotal', 'median'),
+            AvgRushFeeAndShipPrice=('AvgRushFeeAndShipPrice', 'mean'),
+            AvgPctUsedPromo=('HasPromoDiscount', 'mean'),
+            AvgPctOneAndDone=('OneAndDone', 'mean'),
+        )
+        .reset_index()
+    )
+
+    # Formatting
     
-    if row['AvgOrderItemTotal'] < 150:
-        return 'Low-Value Mid-Spender'
-    
-    return 'Uncategorized Refined'
+    grouped['TotalValue'] = grouped['TotalValue'].apply(lambda x: f"${x:,.0f}")
+    grouped['AvgPctUsedPromo'] = grouped['AvgPctUsedPromo'].apply(lambda x: f"{x * 100:.1f}%")
+    grouped['AvgPctOneAndDone'] = grouped['AvgPctOneAndDone'].apply(lambda x: f"{x * 100:.1f}%")
 
-summary['RefinedLeafLabel'] = summary.apply(refine_uncategorized, axis=1)
+    return grouped
 
+grouped_summary = grouped_summary_from_customer_summary(customer_summary)
 
-
-
-grouped_refined = summary.groupby('RefinedLeafLabel').agg({
-    'LeafSize': 'sum',
-    'LeafValue': lambda x: np.sum([float(str(v).replace('$','').replace(',','')) for v in x]),
-    'AvgItemsPerOrder': 'mean',
-    'AvgOrderItemTotal': 'mean',
-    'AvgRushFeeAndShipPrice': 'mean',
-    'PctUsedPromo': 'mean',
-    'PctOneAndDone': 'mean'
-}).rename(columns={
-    'LeafSize': 'TotalCustomers',
-    'LeafValue': 'TotalValue',
-    'AvgItemsPerOrder': 'AvgItemsPerOrder',
-    'AvgOrderItemTotal': 'AvgOrderItemTotal',
-    'AvgRushFeeAndShipPrice': 'AvgRushFeeAndShipPrice',
-    'PctUsedPromo': 'AvgPctUsedPromo',
-    'PctOneAndDone': 'AvgPctOneAndDone'
-}).reset_index()

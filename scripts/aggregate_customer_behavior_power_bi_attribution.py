@@ -10,8 +10,8 @@ from joblib import Parallel, delayed
 # to an aggregation of all customers' first orders.
 
 # ───────────────────────── PARAMETERS ─────────────────────────
-# first_or_last   = 'first'          # 'first'  'last'  or None
-first_or_last   = None
+first_or_last   = 'first'          # 'first'  'last'  or None
+# first_or_last   = None
 number_of_orders= 1                # used only when ↑ is not None
 os.chdir('C:/Users/Graphicsland/Spyder/retention')
 
@@ -31,34 +31,6 @@ item_df = (
 )
 ppo      = pd.read_feather('../sharedData/raw_product_product_option_df.feather')
 
-
-
-# For testing
-# order_df['ShippedDateTime'] = pd.to_datetime(order_df['ShippedDateTime'], errors='coerce')
-# order_df = order_df[
-#     ((order_df['ShippedDateTime'] >= '2021-11-01') &
-#     (order_df['ShippedDateTime'] < '2022-01-01')) |
-#     ((order_df['ShippedDateTime'] >= '2022-11-01') &
-#     (order_df['ShippedDateTime'] < '2023-01-01')) |
-#     ((order_df['ShippedDateTime'] >= '2023-11-01') &
-#     (order_df['ShippedDateTime'] < '2024-01-01')) 
-# ]
-# order_df = order_df[
-#     ((order_df['ShippedDateTime'] >= '2021-11-01') &
-#     (order_df['ShippedDateTime'] < '2022-01-01')) |
-#     ((order_df['ShippedDateTime'] >= '2022-11-01') &
-#     (order_df['ShippedDateTime'] < '2023-01-01')) |
-#     ((order_df['ShippedDateTime'] >= '2023-11-01') &
-#     (order_df['ShippedDateTime'] < '2024-01-01')) |
-#     ((order_df['ShippedDateTime'] >= '2020-05-01') &
-#     (order_df['ShippedDateTime'] < '2020-11-01')) |
-#     ((order_df['ShippedDateTime'] >= '2022-05-01') &
-#     (order_df['ShippedDateTime'] < '2022-11-01')) |
-#     ((order_df['ShippedDateTime'] >= '2024-05-01') &
-#     (order_df['ShippedDateTime'] < '2024-11-01'))
-# ]
-
-
 ppo['IsSticker'] = ppo['Name'].str.contains('icker',case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
 ppo['IsLabel']   = ppo['Name'].str.contains('abel' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
 ppo['IsPouch']   = ppo['Name'].str.contains('ouch' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
@@ -66,6 +38,55 @@ item_df          = item_df.merge(ppo[['Id','IsSticker','IsLabel', 'IsPouch']],
                                  left_on='ProductProductOptionId', right_on='Id', how='left')
 
 
+ad_campaigns = pd.read_feather('../sharedData/raw_ad_campaigns.feather')
+order_and_analytics = pd.read_feather('../sharedData/raw_order_and_analytics.feather')
+
+# Clean top 'medium' and 'source' values
+top_mediums = ['cpc', '(none)', 'organic', 'referral', 'email', 'Display_Ad', 'social']
+top_sources = ['google', '(direct)', 'bing', 'facebook']
+
+# Replace missing values
+order_and_analytics['medium'] = order_and_analytics['medium'].fillna('').astype(str)
+order_and_analytics['source'] = order_and_analytics['source'].fillna('').astype(str)
+
+# One-hot encode top mediums
+for m in top_mediums:
+    col = f'medium_{m.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")}'
+    order_and_analytics[col] = (order_and_analytics['medium'] == m).astype(int)
+
+# One-hot encode top sources
+for s in top_sources:
+    col = f'source_{s.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")}'
+    order_and_analytics[col] = (order_and_analytics['source'] == s).astype(int)
+
+order_and_analytics['AdwordsCampaignId'] = order_and_analytics['AdwordsCampaignId'].astype(str)
+ad_campaigns['AdCampaignId'] = ad_campaigns['AdCampaignId'].astype(str)
+
+
+# Merge with ad_campaigns on campaign ID
+orders_and_campaigns = order_and_analytics.merge(
+    ad_campaigns,
+    left_on='AdwordsCampaignId',
+    right_on='AdCampaignId',
+    how='left'
+)
+
+# Keep only necessary columns
+orders_and_campaigns = orders_and_campaigns[
+    ['OrderNumber'] +
+    [col for col in orders_and_campaigns.columns if col.startswith('medium_') or col.startswith('source_') or (col.startswith('Ad') and not col.startswith('Add'))]
+]
+
+orders_and_campaigns = orders_and_campaigns.drop(columns=['AdwordsCampaignId'])
+# Coerce both columns to numeric (int64), handling any accidental non-numeric values
+orders_and_campaigns['OrderNumber'] = pd.to_numeric(orders_and_campaigns['OrderNumber'], errors='coerce').astype('Int64')
+
+
+
+# Drop duplicates if needed
+orders_and_campaigns = orders_and_campaigns.drop_duplicates()
+
+order_df = order_df.merge(orders_and_campaigns, on='OrderNumber', how = 'left') 
 
 # basic per-order aggregates
 counts   = item_df.groupby('OrderNumber').size().rename('ItemCount')
@@ -111,6 +132,9 @@ order_df['Summer']           = order_df['Month'].isin([5,6,7,8])
 order_df['ElectionSeason']   = order_df['Month'].isin([9,10]) & (order_df['PlacedDateTime'].dt.year%2==0)
 order_df['PresidentialElection']= order_df['Month'].isin([8,9,10]) & (order_df['PlacedDateTime'].dt.year%4==0)
 order_df['RushFeeAndShipPrice']= order_df['RushFee']+order_df['ShipPrice']
+
+
+
 
 order_df.to_feather('outputs/order_df_retention.feather')
 
@@ -160,15 +184,36 @@ hour_pct   = pct(order_df,'HourCategory',['Morning','Afternoon','Evening','Early
 month_pct  = order_df.groupby('CustomerId')[['Holiday','Summer','ElectionSeason','PresidentialElection']].mean().add_prefix('Pct')
 week_pct   = order_df.groupby('CustomerId')[['FirstWeek','LastWeek']].mean().add_prefix('Pct')
 
-add_pct = pd.concat([
-    ship_pct, hour_pct, week_pct, month_pct, 
-    order_df.groupby('CustomerId')['WorkHours'].mean().rename('PctWorkHours'),
-    order_df.groupby('CustomerId')['Workday'  ].mean().rename('PctWorkday'),
-    order_df.groupby('CustomerId')['OrderContainsSticker'].mean().rename('PctOrdersWithSticker'),
-    order_df.groupby('CustomerId')['OrderContainsLabel'  ].mean().rename('PctOrdersWithLabel'),
-    order_df.groupby('CustomerId')['OrderContainsPouch'  ].mean().rename('PctOrdersWithPouch')
-],axis=1).reset_index()
+# add_pct = pd.concat([
+#     ship_pct, hour_pct, week_pct, month_pct, 
+#     order_df.groupby('CustomerId')['WorkHours'           ].mean().rename('PctWorkHours'),
+#     order_df.groupby('CustomerId')['Workday'             ].mean().rename('PctWorkday'),
+#     order_df.groupby('CustomerId')['OrderContainsSticker'].mean().rename('PctOrdersWithSticker'),
+#     order_df.groupby('CustomerId')['OrderContainsLabel'  ].mean().rename('PctOrdersWithLabel'),
+#     order_df.groupby('CustomerId')['OrderContainsPouch'  ].mean().rename('PctOrdersWithPouch'),
+#     ],axis=1).reset_index()
 
+concat_pct = pd.concat([
+    ship_pct, hour_pct, week_pct, month_pct
+    ],axis=1).reset_index()
+
+ad_pct = order_df.groupby('CustomerId')[
+    [
+    'WorkHours', 'Workday', 
+    'OrderContainsSticker', 'OrderContainsLabel', 'OrderContainsPouch',
+    'AdSticker', 'AdLabel', 'AdPouch', 'AdCompetitor', 'AdMaterial',
+    'AdUseOrShape', 'AdVideo', 'AdDSA',
+    'medium_cpc', 'medium_none', 'medium_organic', 'medium_referral',
+    'medium_email', 'medium_Display_Ad', 'medium_social',
+    'source_google', 'source_direct', 'source_bing', 'source_facebook'
+    ]
+].mean().reset_index()
+
+# Rename all columns in ad_pct except 'CustomerId' to start with 'Pct'
+ad_pct = ad_pct.rename(columns={col: f'Pct{col}' for col in ad_pct.columns if col != 'CustomerId'})
+
+
+add_pct = concat_pct.merge(ad_pct, on='CustomerId', how='left')
 
 # ─────────── 4  PATTERN DETECTORS ───────────  
 

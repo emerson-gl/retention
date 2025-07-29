@@ -10,7 +10,7 @@ import os
 # ───────────────────────── SETUP ─────────────────────────
 cutoff_date = pd.Timestamp('2023-01-01')
 number_of_clusters = 4
-mask_dict = {'FirstOrderContainsSticker': True}  # or set to None
+mask_dict = {'PctOrdersWithSticker': 1}  # or set to None
 
 os.chdir('C:\\Users\\Graphicsland\\Spyder\\retention')
 
@@ -26,22 +26,6 @@ order_df = (
     .copy()
 )
 
-item_df  = pd.read_feather('../sharedData/raw_order_item_df.feather')
-item_df = (
-    item_df[(item_df['IsDeleted'] != 1)]
-    .copy()
-)
-
-ppo      = pd.read_feather('../sharedData/raw_product_product_option_df.feather')
-
-# ───────────────────────── CLEAN ─────────────────────────
-ppo['IsSticker'] = ppo['Name'].str.contains('icker',case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-ppo['IsLabel']   = ppo['Name'].str.contains('abel' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-ppo['IsPouch']   = ppo['Name'].str.contains('ouch' ,case=False,na=False) & ~ppo['Name'].str.contains('ample',case=False,na=False)
-
-item_df = item_df.merge(ppo[['Id','IsSticker','IsLabel', 'IsPouch']],
-                        left_on='ProductProductOptionId', right_on='Id', how='left')
-
 
 first_orders = (
     order_df
@@ -51,31 +35,24 @@ first_orders = (
 )
 
 first_orders['ShippingType'] = np.select(
-    [(first_orders['OrderItemPriceTotal']<75)&(first_orders['ShippingTotal']==0)],
-    ['NormalShipping'],
-    default='OtherShipping'
+    [
+        (first_orders['OrderItemPriceTotal'] < 75) & (first_orders['ShippingTotal'] == 0),
+        (first_orders['OrderItemPriceTotal'] >= 75) & (first_orders['ShippingTotal'] == 0),
+        (first_orders['OrderItemPriceTotal'] < 75) & (first_orders['ShippingTotal'] == 4),
+        (first_orders['ShippingTotal'] > 4)
+    ],
+    [
+        'NormalShipping',
+        'TwoDayShipping',
+        'TwoDayShipping',
+        'ExpeditedShipping'
+    ],
+    default='UncategorizedShipping'
 )
 
-flags = (
-    item_df.groupby('OrderNumber')[['IsSticker','IsLabel', 'IsPouch']]
-    .any()
-    .rename(columns={
-        'IsSticker': 'OrderContainsSticker',
-        'IsLabel': 'OrderContainsLabel',
-        'IsPouch': 'OrderContainsPouch'
-    })
-)
 
-first_orders = first_orders.merge(flags, on='OrderNumber', how='left')
 
-first_order_flags = first_orders[['CustomerId', 'ShippingType', 'OrderContainsLabel', 'OrderContainsSticker', 'OrderContainsPouch']].copy()
-first_order_flags.rename(columns={
-    'OrderContainsLabel': 'FirstOrderContainsLabel',
-    'OrderContainsSticker': 'FirstOrderContainsSticker',
-    'OrderContainsPouch': 'FirstOrderContainsPouch'
-}, inplace=True)
-
-customer_summary = customer_summary.merge(first_order_flags, on='CustomerId', how='left')
+customer_summary = customer_summary.merge(first_orders, on='CustomerId', how='left')
 customer_summary = customer_summary[customer_summary['FirstOrderDate'] >= cutoff_date]
 
 
@@ -95,6 +72,10 @@ cluster_features = [
 prediction_feature = 'OneAndDone'
 
 xgb_data = customer_summary[['CustomerId', prediction_feature] + cluster_features].dropna().copy()
+
+# Subsample for testing
+xgb_data = xgb_data.sample(n=5000, random_state=42)  # adjust n as needed
+
 
 # ───────────────────────── ENCODE + SCALE ─────────────────────────
 categorical_cols = ['HasPromoDiscount', 'ShippingType']
@@ -149,11 +130,11 @@ xgb_plot_data = xgb_data.copy()
 
 for col in categorical_cols:
     if col == 'ShippingType':
-        expected_shipping_types = ['Rushed', 'Expedited', 'NormalShipping', 'No-Ship', 'Missing']
+        expected_shipping_types = ['NormalShipping', 'TwoDayShipping', 'ExpeditedShipping', 'UncategorizedShipping']
         xgb_plot_data[col] = pd.Categorical(
             xgb_plot_data[col],
             categories=expected_shipping_types
-        ).fillna('Missing')
+        ).fillna('UncategorizedShipping')
         xgb_plot_data[col] = xgb_plot_data[col].cat.codes
     else:
         # Convert 'True'/'False' strings or actual bools to 1/0
